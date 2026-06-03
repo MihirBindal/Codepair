@@ -81,6 +81,12 @@ int main() {
             res->writeHeader("Access-Control-Allow-Origin", "*");
             res->end("{\"room_id\":\"" + room_id + "\"}");
         })
+        .options("/*", [](auto *res, auto *req) {
+            res->writeHeader("Access-Control-Allow-Origin", "*");
+            res->writeHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+            res->writeHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+            res->end();
+        })
         .post("/run", [](auto *res, auto *req) {
             cout << "[/run] Request received" << endl;
             auto body = make_shared<string>();
