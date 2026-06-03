@@ -30,6 +30,7 @@ add_executable(codepair_server
     src/ThreadPool.cpp
     src/SessionManager.cpp
     src/RedisClient.cpp
+    src/CodeExecutor.cpp
     ${USOCKETS_SOURCES}
 )
 
