@@ -1,0 +1,20 @@
+# Compiled binaries and object files
+build/
+*.o
+*.obj
+*.out
+*.exe
+codepair_server
+
+# Databases and runtime data
+temp_run/
+*.log
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# IDE configurations
+.vscode/
+.idea/
+cmake-build-*/
