@@ -1,0 +1,9 @@
+build/
+venv/
+.venv/
+.git/
+frontend/
+cmake-build-*/
+.vscode/
+.idea/
+*.log

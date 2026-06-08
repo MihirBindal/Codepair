@@ -41,6 +41,7 @@ struct WSMessage {
     string code;
     int version = -1;
     string language;
+    string problem;
 };
 
 SessionManager session_manager;
@@ -124,6 +125,35 @@ WSMessage parse_ws_message(const string& text) {
         if (start != string::npos) {
             size_t end = text.find("\"", start + 1);
             if (end != string::npos) msg.language = text.substr(start + 1, end - start - 1);
+        }
+    }
+    // Extract "problem"
+    size_t prob_pos = text.find("\"problem\"");
+    if (prob_pos != string::npos) {
+        size_t start = text.find("\"", prob_pos + 9);
+        if (start != string::npos) {
+            string prob_val = "";
+            bool escaped = false;
+            size_t i = start + 1;
+            while (i < text.length()) {
+                char c = text[i];
+                if (escaped) {
+                    if (c == 'n') prob_val += '\n';
+                    else if (c == 't') prob_val += '\t';
+                    else if (c == '\"') prob_val += '\"';
+                    else if (c == '\\') prob_val += '\\';
+                    else prob_val += c;
+                    escaped = false;
+                } else if (c == '\\') {
+                    escaped = true;
+                } else if (c == '\"') {
+                    break;
+                } else {
+                    prob_val += c;
+                }
+                i++;
+            }
+            msg.problem = prob_val;
         }
     }
     return msg;
@@ -413,18 +443,21 @@ int main() {
                 string code = redis_client.get("room:" + data->room_id + ":code");
                 string ver_str = redis_client.get("room:" + data->room_id + ":version");
                 string lang = redis_client.get("room:" + data->room_id + ":language");
+                string problem = redis_client.get("room:" + data->room_id + ":problem");
                 int version = ver_str.empty() ? 0 : stoi(ver_str);
                 if (lang.empty()) lang = "cpp";
                 
                 // Initialize local session variables in memory
                 session_manager.update_code_with_version(data->room_id, code, version);
                 session_manager.update_language(data->room_id, lang);
+                session_manager.update_problem(data->room_id, problem);
                 
                 string init_resp = "{"
                     "\"type\":\"init\","
                     "\"code\":\"" + escape_json(code) + "\","
                     "\"version\":" + to_string(version) + ","
-                    "\"language\":\"" + escape_json(lang) + "\""
+                    "\"language\":\"" + escape_json(lang) + "\","
+                    "\"problem\":\"" + escape_json(problem) + "\""
                 "}";
                 ws->send(init_resp, uWS::OpCode::TEXT);
             },
@@ -464,6 +497,21 @@ int main() {
                     // Persist to Redis
                     thread_pool.enqueue([room_id = data->room_id, language = msg.language]() {
                         redis_client.set("room:" + room_id + ":language", language);
+                    });
+                } else if (msg.type == "problem") {
+                    session_manager.update_problem(data->room_id, msg.problem);
+                    // Forward problem to peer
+                    Session s;
+                    if (session_manager.get_session(data->room_id, s)) {
+                        void* other_ws = (data->role == "interviewer") ? s.candidate : s.interviewer;
+                        if (other_ws) {
+                            auto* peer = (uWS::WebSocket<false, true, SocketData>*) other_ws;
+                            peer->send(text, opCode);
+                        }
+                    }
+                    // Persist to Redis
+                    thread_pool.enqueue([room_id = data->room_id, problem = msg.problem]() {
+                        redis_client.set("room:" + room_id + ":problem", problem);
                     });
                 } else if (msg.type == "run") {
                     Session s;
