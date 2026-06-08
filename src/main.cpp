@@ -62,11 +62,30 @@ string escape_json(const string& s) {
     return res;
 }
 
+// Helper to find a specific JSON key in a simple flat JSON string, ignoring matching string values
+size_t find_json_key(const string& json, const string& key) {
+    string search_str = "\"" + key + "\"";
+    size_t pos = 0;
+    while (true) {
+        pos = json.find(search_str, pos);
+        if (pos == string::npos) return string::npos;
+        size_t after_quote = pos + search_str.length();
+        // Skip whitespace
+        while (after_quote < json.length() && (json[after_quote] == ' ' || json[after_quote] == '\t' || json[after_quote] == '\r' || json[after_quote] == '\n')) {
+            after_quote++;
+        }
+        if (after_quote < json.length() && json[after_quote] == ':') {
+            return pos; // Found the actual key
+        }
+        pos += search_str.length(); // Skip and search next
+    }
+}
+
 // Simple JSON parser for WebSocket and HTTP payloads
 WSMessage parse_ws_message(const string& text) {
     WSMessage msg;
     // Extract "type"
-    size_t type_pos = text.find("\"type\"");
+    size_t type_pos = find_json_key(text, "type");
     if (type_pos != string::npos) {
         size_t start = text.find("\"", type_pos + 6);
         if (start != string::npos) {
@@ -75,7 +94,7 @@ WSMessage parse_ws_message(const string& text) {
         }
     }
     // Extract "code"
-    size_t code_pos = text.find("\"code\"");
+    size_t code_pos = find_json_key(text, "code");
     if (code_pos != string::npos) {
         size_t start = text.find("\"", code_pos + 6);
         if (start != string::npos) {
@@ -104,7 +123,7 @@ WSMessage parse_ws_message(const string& text) {
         }
     }
     // Extract "version"
-    size_t ver_pos = text.find("\"version\"");
+    size_t ver_pos = find_json_key(text, "version");
     if (ver_pos != string::npos) {
         size_t start = text.find(":", ver_pos + 9);
         if (start != string::npos) {
@@ -119,7 +138,7 @@ WSMessage parse_ws_message(const string& text) {
         }
     }
     // Extract "language"
-    size_t lang_pos = text.find("\"language\"");
+    size_t lang_pos = find_json_key(text, "language");
     if (lang_pos != string::npos) {
         size_t start = text.find("\"", lang_pos + 10);
         if (start != string::npos) {
@@ -128,7 +147,7 @@ WSMessage parse_ws_message(const string& text) {
         }
     }
     // Extract "problem"
-    size_t prob_pos = text.find("\"problem\"");
+    size_t prob_pos = find_json_key(text, "problem");
     if (prob_pos != string::npos) {
         size_t start = text.find("\"", prob_pos + 9);
         if (start != string::npos) {
