@@ -4,6 +4,8 @@
 #include <shared_mutex>
 #include <random>
 #include <mutex>
+#include <chrono>
+#include <vector>
 
 using namespace std;
 
@@ -12,6 +14,8 @@ struct Session {
     string code;
     string problem;
     string language = "cpp";
+    int version = 0;
+    chrono::steady_clock::time_point last_activity = chrono::steady_clock::now();
     void* interviewer = nullptr;
     void* candidate = nullptr;
 };
@@ -23,10 +27,15 @@ public:
     void leave(string id, void* ws);
     bool get_session(string id, Session& out_session);
     void update_code(string id, string code);
+    bool update_code_with_version(string id, string code, int version);
     void update_problem(string id, string problem);
     void update_language(string id, string language);
+    void touch(string id);
+    vector<string> get_expired_sessions(int expiry_hours);
+    void delete_session(string id);
 private:
     unordered_map<string, Session> sessions;
     shared_mutex rw_mutex;
     string generate_id();
 };
+

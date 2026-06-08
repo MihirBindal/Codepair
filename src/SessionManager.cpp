@@ -66,7 +66,22 @@ void SessionManager::update_code(string id, string code) {
     auto it = sessions.find(id);
     if (it != sessions.end()) {
         it->second.code = code;
+        it->second.last_activity = chrono::steady_clock::now();
     }
+}
+
+bool SessionManager::update_code_with_version(string id, string code, int version) {
+    unique_lock<shared_mutex> lock(rw_mutex);
+    auto it = sessions.find(id);
+    if (it != sessions.end()) {
+        if (version > it->second.version) {
+            it->second.code = code;
+            it->second.version = version;
+            it->second.last_activity = chrono::steady_clock::now();
+            return true;
+        }
+    }
+    return false;
 }
 
 void SessionManager::update_problem(string id, string problem) {
@@ -74,6 +89,7 @@ void SessionManager::update_problem(string id, string problem) {
     auto it = sessions.find(id);
     if (it != sessions.end()) {
         it->second.problem = problem;
+        it->second.last_activity = chrono::steady_clock::now();
     }
 }
 
@@ -82,5 +98,33 @@ void SessionManager::update_language(string id, string language) {
     auto it = sessions.find(id);
     if (it != sessions.end()) {
         it->second.language = language;
+        it->second.last_activity = chrono::steady_clock::now();
     }
 }
+
+void SessionManager::touch(string id) {
+    unique_lock<shared_mutex> lock(rw_mutex);
+    auto it = sessions.find(id);
+    if (it != sessions.end()) {
+        it->second.last_activity = chrono::steady_clock::now();
+    }
+}
+
+vector<string> SessionManager::get_expired_sessions(int expiry_hours) {
+    shared_lock<shared_mutex> lock(rw_mutex);
+    vector<string> expired;
+    auto now = chrono::steady_clock::now();
+    for (auto const& [id, s] : sessions) {
+        auto elapsed = chrono::duration_cast<chrono::hours>(now - s.last_activity).count();
+        if (elapsed >= expiry_hours) {
+            expired.push_back(id);
+        }
+    }
+    return expired;
+}
+
+void SessionManager::delete_session(string id) {
+    unique_lock<shared_mutex> lock(rw_mutex);
+    sessions.erase(id);
+}
+

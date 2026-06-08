@@ -3,20 +3,43 @@
 #include <string_view>
 #include <string>
 #include <memory>
+#include <chrono>
+#include <vector>
+#include <thread>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <string.h>
+
 #include "SessionManager.h"
 #include "RedisClient.h"
 #include "ThreadPool.h"
-#include "CodeExecutor.h"
 
 using namespace std;
 
 struct SocketData {
     string room_id;
     string role;
+    shared_ptr<bool> run_aborted;
 };
 
 struct RunRequest {
+    string room_id;
     string code;
+    string language;
+};
+
+struct ExecutionResult {
+    string stdout_output;
+    string stderr_output;
+    int exit_code = 0;
+    bool timed_out = false;
+};
+
+struct WSMessage {
+    string type;
+    string code;
+    int version = -1;
     string language;
 };
 
@@ -24,27 +47,42 @@ SessionManager session_manager;
 RedisClient redis_client;
 ThreadPool thread_pool(4);
 
-RunRequest parse_run_request(const string& body) {
-    RunRequest req;
-    size_t lang_pos = body.find("\"language\"");
-    if (lang_pos != string::npos) {
-        size_t start = body.find("\"", lang_pos + 10);
+// Escape a string to be safely embedded in JSON
+string escape_json(const string& s) {
+    string res = "";
+    for (char c : s) {
+        if (c == '"') res += "\\\"";
+        else if (c == '\\') res += "\\\\";
+        else if (c == '\n') res += "\\n";
+        else if (c == '\r') res += "\\r";
+        else if (c == '\t') res += "\\t";
+        else res += c;
+    }
+    return res;
+}
+
+// Simple JSON parser for WebSocket and HTTP payloads
+WSMessage parse_ws_message(const string& text) {
+    WSMessage msg;
+    // Extract "type"
+    size_t type_pos = text.find("\"type\"");
+    if (type_pos != string::npos) {
+        size_t start = text.find("\"", type_pos + 6);
         if (start != string::npos) {
-            size_t end = body.find("\"", start + 1);
-            if (end != string::npos) {
-                req.language = body.substr(start + 1, end - start - 1);
-            }
+            size_t end = text.find("\"", start + 1);
+            if (end != string::npos) msg.type = text.substr(start + 1, end - start - 1);
         }
     }
-    size_t code_pos = body.find("\"code\"");
+    // Extract "code"
+    size_t code_pos = text.find("\"code\"");
     if (code_pos != string::npos) {
-        size_t start = body.find("\"", code_pos + 6);
+        size_t start = text.find("\"", code_pos + 6);
         if (start != string::npos) {
             string code_val = "";
             bool escaped = false;
             size_t i = start + 1;
-            while (i < body.length()) {
-                char c = body[i];
+            while (i < text.length()) {
+                char c = text[i];
                 if (escaped) {
                     if (c == 'n') code_val += '\n';
                     else if (c == 't') code_val += '\t';
@@ -61,10 +99,221 @@ RunRequest parse_run_request(const string& body) {
                 }
                 i++;
             }
-            req.code = code_val;
+            msg.code = code_val;
+        }
+    }
+    // Extract "version"
+    size_t ver_pos = text.find("\"version\"");
+    if (ver_pos != string::npos) {
+        size_t start = text.find(":", ver_pos + 9);
+        if (start != string::npos) {
+            size_t i = start + 1;
+            while (i < text.length() && (text[i] == ' ' || text[i] == '\t' || text[i] == ':')) i++;
+            string num_str = "";
+            while (i < text.length() && isdigit(text[i])) {
+                num_str += text[i];
+                i++;
+            }
+            if (!num_str.empty()) msg.version = stoi(num_str);
+        }
+    }
+    // Extract "language"
+    size_t lang_pos = text.find("\"language\"");
+    if (lang_pos != string::npos) {
+        size_t start = text.find("\"", lang_pos + 10);
+        if (start != string::npos) {
+            size_t end = text.find("\"", start + 1);
+            if (end != string::npos) msg.language = text.substr(start + 1, end - start - 1);
+        }
+    }
+    return msg;
+}
+
+RunRequest parse_run_request(const string& body) {
+    WSMessage parsed = parse_ws_message(body);
+    RunRequest req;
+    req.code = parsed.code;
+    req.language = parsed.language;
+    
+    // Extract "room_id"
+    size_t room_pos = body.find("\"room_id\"");
+    if (room_pos != string::npos) {
+        size_t start = body.find("\"", room_pos + 9);
+        if (start != string::npos) {
+            size_t end = body.find("\"", start + 1);
+            if (end != string::npos) req.room_id = body.substr(start + 1, end - start - 1);
         }
     }
     return req;
+}
+
+// HTTP/1.0 streaming client connecting to Python FastAPI sidecar
+ExecutionResult run_code_via_sidecar(const string& code, const string& language, const string& ws_room_id, uWS::Loop* loop, shared_ptr<bool> aborted) {
+    ExecutionResult res;
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) {
+        res.stderr_output = "Failed to create execution socket";
+        res.exit_code = 1;
+        return res;
+    }
+    
+    struct sockaddr_in serv_addr;
+    memset(&serv_addr, 0, sizeof(serv_addr));
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_port = htons(8000);
+    if (inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr) <= 0) {
+        res.stderr_output = "Invalid sidecar target address";
+        res.exit_code = 1;
+        close(sock);
+        return res;
+    }
+    
+    // Set socket timeout (10 seconds)
+    struct timeval tv;
+    tv.tv_sec = 10;
+    tv.tv_usec = 0;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
+    
+    if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+        res.stderr_output = "Failed to connect to execution sidecar microservice";
+        res.exit_code = 1;
+        close(sock);
+        return res;
+    }
+    
+    string payload = "{\"code\":\"" + escape_json(code) + "\",\"language\":\"" + escape_json(language) + "\"}";
+    string req = "POST /execute HTTP/1.0\r\n"
+                 "Host: 127.0.0.1:8000\r\n"
+                 "Content-Type: application/json\r\n"
+                 "Content-Length: " + to_string(payload.length()) + "\r\n"
+                 "Connection: close\r\n\r\n" + payload;
+                 
+    if (send(sock, req.c_str(), req.length(), 0) < 0) {
+        res.stderr_output = "Failed to transmit request to sidecar";
+        res.exit_code = 1;
+        close(sock);
+        return res;
+    }
+    
+    char buf[4096];
+    string response_accumulator = "";
+    bool headers_passed = false;
+    string stream_buffer = "";
+    
+    auto parse_json_field = [](const string& line, const string& key) {
+        size_t pos = line.find("\"" + key + "\"");
+        if (pos == string::npos) return string("");
+        size_t colon = line.find(":", pos);
+        if (colon == string::npos) return string("");
+        
+        size_t start = line.find("\"", colon);
+        if (start != string::npos && start < line.find_first_of(",}", colon)) {
+            size_t end = line.find("\"", start + 1);
+            if (end != string::npos) {
+                string val = line.substr(start + 1, end - start - 1);
+                string decoded = "";
+                bool escaped = false;
+                for (char c : val) {
+                    if (escaped) {
+                        if (c == 'n') decoded += '\n';
+                        else if (c == 't') decoded += '\t';
+                        else if (c == '\"') decoded += '\"';
+                        else if (c == '\\') decoded += '\\';
+                        else decoded += c;
+                        escaped = false;
+                    } else if (c == '\\') {
+                        escaped = true;
+                    } else {
+                        decoded += c;
+                    }
+                }
+                return decoded;
+            }
+        } else {
+            size_t i = colon + 1;
+            while (i < line.length() && (line[i] == ' ' || line[i] == '\t' || line[i] == ':')) i++;
+            string val = "";
+            while (i < line.length() && line[i] != ',' && line[i] != '}' && line[i] != '\n' && line[i] != '\r') {
+                val += line[i];
+                i++;
+            }
+            return val;
+        }
+        return string("");
+    };
+    
+    auto process_stream_data = [&](const string& chunk) {
+        stream_buffer += chunk;
+        size_t newline_pos;
+        while ((newline_pos = stream_buffer.find('\n')) != string::npos) {
+            string line = stream_buffer.substr(0, newline_pos);
+            stream_buffer = stream_buffer.substr(newline_pos + 1);
+            
+            if (line.empty()) continue;
+            
+            string event = parse_json_field(line, "event");
+            string data = parse_json_field(line, "data");
+            
+            if (event == "stdout") {
+                res.stdout_output += data;
+            } else if (event == "stderr") {
+                res.stderr_output += data;
+            } else if (event == "exit") {
+                string ec_str = parse_json_field(line, "exit_code");
+                if (!ec_str.empty()) res.exit_code = stoi(ec_str);
+                string to_str = parse_json_field(line, "timed_out");
+                if (to_str == "true") res.timed_out = true;
+            }
+            
+            // Stream back to WebSocket clients in the room in real-time
+            if (!ws_room_id.empty() && loop != nullptr) {
+                string ws_payload = "{\"type\":\"output\",\"data\":" + line + "}";
+                loop->defer([ws_room_id, ws_payload, aborted]() {
+                    if (!*aborted) {
+                        Session s;
+                        if (session_manager.get_session(ws_room_id, s)) {
+                            if (s.interviewer) {
+                                auto* ws = (uWS::WebSocket<false, true, SocketData>*) s.interviewer;
+                                ws->send(ws_payload, uWS::OpCode::TEXT);
+                            }
+                            if (s.candidate) {
+                                auto* ws = (uWS::WebSocket<false, true, SocketData>*) s.candidate;
+                                ws->send(ws_payload, uWS::OpCode::TEXT);
+                            }
+                        }
+                    }
+                });
+            }
+        }
+    };
+    
+    while (true) {
+        if (*aborted) {
+            cout << "[Sidecar Client] Execution aborted by user. Closing socket." << endl;
+            break;
+        }
+        
+        int n = recv(sock, buf, sizeof(buf) - 1, 0);
+        if (n <= 0) {
+            break;
+        }
+        buf[n] = '\0';
+        
+        if (!headers_passed) {
+            response_accumulator.append(buf, n);
+            size_t pos = response_accumulator.find("\r\n\r\n");
+            if (pos != string::npos) {
+                headers_passed = true;
+                string remaining_body = response_accumulator.substr(pos + 4);
+                process_stream_data(remaining_body);
+            }
+        } else {
+            process_stream_data(string(buf, n));
+        }
+    }
+    
+    close(sock);
+    return res;
 }
 
 int main() {
@@ -73,6 +322,25 @@ int main() {
         return 1;
     }
     cout << "Connected to Redis successfully!" << endl;
+
+    // Start session expiry audit thread (scanning every 1 minute)
+    thread expiry_thread([]() {
+        while (true) {
+            this_thread::sleep_for(chrono::minutes(1));
+            // Expire sessions with no activity for 2 hours (120 minutes)
+            vector<string> expired = session_manager.get_expired_sessions(2);
+            for (const string& room_id : expired) {
+                cout << "[Expiry Thread] Purging idle room: " << room_id << endl;
+                thread_pool.enqueue([room_id]() {
+                    redis_client.del("room:" + room_id + ":code");
+                    redis_client.del("room:" + room_id + ":version");
+                    redis_client.del("room:" + room_id + ":language");
+                });
+                session_manager.delete_session(room_id);
+            }
+        }
+    });
+    expiry_thread.detach();
 
     uWS::App()
         .get("/create", [](auto *res, auto *req) {
@@ -98,28 +366,10 @@ int main() {
             res->onData([res, body, aborted](string_view chunk, bool isLast) {
                 body->append(chunk.data(), chunk.length());
                 if (isLast) {
-                    cout << "[/run] Finished reading body. Size: " << body->size() << " bytes." << endl;
                     RunRequest run_req = parse_run_request(*body);
-                    cout << "[/run] Enqueuing execution task to ThreadPool. Language: " << run_req.language << endl;
                     uWS::Loop* loop = uWS::Loop::get();
                     thread_pool.enqueue([res, run_req, aborted, loop]() {
-                        cout << "[ThreadPool] Task started. Spawning sandbox..." << endl;
-                        CodeExecutor executor;
-                        ExecutionResult exec_res = executor.execute(run_req.code, run_req.language);
-                        cout << "[ThreadPool] Sandbox execution completed. Exit code: " << exec_res.exit_code << endl;
-                        
-                        auto escape_json = [](const string& s) {
-                            string res = "";
-                            for (char c : s) {
-                                if (c == '"') res += "\\\"";
-                                else if (c == '\\') res += "\\\\";
-                                else if (c == '\n') res += "\\n";
-                                else if (c == '\r') res += "\\r";
-                                else if (c == '\t') res += "\\t";
-                                else res += c;
-                            }
-                            return res;
-                        };
+                        ExecutionResult exec_res = run_code_via_sidecar(run_req.code, run_req.language, "", nullptr, aborted);
                         
                         string json_resp = "{"
                             "\"stdout\":\"" + escape_json(exec_res.stdout_output) + "\","
@@ -128,14 +378,11 @@ int main() {
                             "\"timed_out\":" + (exec_res.timed_out ? "true" : "false") +
                         "}";
                         
-                        cout << "[ThreadPool] Deferring response back to main loop..." << endl;
                         loop->defer([res, json_resp, aborted]() {
-                            cout << "[Main Thread] Defer callback triggered. Aborted: " << (*aborted ? "yes" : "no") << endl;
                             if (!*aborted) {
                                 res->writeHeader("Content-Type", "application/json");
                                 res->writeHeader("Access-Control-Allow-Origin", "*");
                                 res->end(json_resp);
-                                cout << "[Main Thread] Response sent successfully" << endl;
                             }
                         });
                     });
@@ -147,7 +394,7 @@ int main() {
                 string room_id(req->getParameter("room_id"));
                 string role(req->getParameter("role"));
                 res->template upgrade<SocketData>(
-                    {room_id, role},
+                    {room_id, role, make_shared<bool>(false)},
                     req->getHeader("sec-websocket-key"),
                     req->getHeader("sec-websocket-protocol"),
                     req->getHeader("sec-websocket-extensions"),
@@ -162,32 +409,83 @@ int main() {
                 }
                 cout << "Client joined room " << data->room_id << " as " << data->role << endl;
                 
+                // Fetch state from Redis and send init message
                 string code = redis_client.get("room:" + data->room_id + ":code");
-                if (!code.empty()) {
-                    ws->send(code, uWS::OpCode::TEXT);
-                }
+                string ver_str = redis_client.get("room:" + data->room_id + ":version");
+                string lang = redis_client.get("room:" + data->room_id + ":language");
+                int version = ver_str.empty() ? 0 : stoi(ver_str);
+                if (lang.empty()) lang = "cpp";
+                
+                // Initialize local session variables in memory
+                session_manager.update_code_with_version(data->room_id, code, version);
+                session_manager.update_language(data->room_id, lang);
+                
+                string init_resp = "{"
+                    "\"type\":\"init\","
+                    "\"code\":\"" + escape_json(code) + "\","
+                    "\"version\":" + to_string(version) + ","
+                    "\"language\":\"" + escape_json(lang) + "\""
+                "}";
+                ws->send(init_resp, uWS::OpCode::TEXT);
             },
             .message = [](auto *ws, string_view message, uWS::OpCode opCode) {
                 SocketData *data = ws->getUserData();
+                string text(message);
+                WSMessage msg = parse_ws_message(text);
                 
-                Session s;
-                if (session_manager.get_session(data->room_id, s)) {
-                    void* other_ws = (data->role == "interviewer") ? s.candidate : s.interviewer;
-                    if (other_ws) {
-                        auto* peer = (uWS::WebSocket<false, true, SocketData>*) other_ws;
-                        peer->send(message, opCode);
+                if (msg.type == "edit") {
+                    if (session_manager.update_code_with_version(data->room_id, msg.code, msg.version)) {
+                        // Forward edit to peer
+                        Session s;
+                        if (session_manager.get_session(data->room_id, s)) {
+                            void* other_ws = (data->role == "interviewer") ? s.candidate : s.interviewer;
+                            if (other_ws) {
+                                auto* peer = (uWS::WebSocket<false, true, SocketData>*) other_ws;
+                                peer->send(text, opCode);
+                            }
+                        }
+                        // Persist to Redis
+                        thread_pool.enqueue([room_id = data->room_id, code = msg.code, version = msg.version]() {
+                            redis_client.set("room:" + room_id + ":code", code);
+                            redis_client.set("room:" + room_id + ":version", to_string(version));
+                        });
+                    }
+                } else if (msg.type == "language") {
+                    session_manager.update_language(data->room_id, msg.language);
+                    // Forward language to peer
+                    Session s;
+                    if (session_manager.get_session(data->room_id, s)) {
+                        void* other_ws = (data->role == "interviewer") ? s.candidate : s.interviewer;
+                        if (other_ws) {
+                            auto* peer = (uWS::WebSocket<false, true, SocketData>*) other_ws;
+                            peer->send(text, opCode);
+                        }
+                    }
+                    // Persist to Redis
+                    thread_pool.enqueue([room_id = data->room_id, language = msg.language]() {
+                        redis_client.set("room:" + room_id + ":language", language);
+                    });
+                } else if (msg.type == "run") {
+                    Session s;
+                    if (session_manager.get_session(data->room_id, s)) {
+                        // Reset this socket's abort state before launch
+                        *data->run_aborted = false;
+                        
+                        cout << "[WebSocket] Dispatching code run task. Room: " << data->room_id << endl;
+                        uWS::Loop* loop = uWS::Loop::get();
+                        thread_pool.enqueue([room_id = data->room_id, code = s.code, language = s.language, loop, aborted = data->run_aborted]() {
+                            run_code_via_sidecar(code, language, room_id, loop, aborted);
+                        });
                     }
                 }
-                
-                session_manager.update_code(data->room_id, string(message));
-                
-                thread_pool.enqueue([room_id = data->room_id, code = string(message)]() {
-                    redis_client.set("room:" + room_id + ":code", code);
-                });
             },
             .close = [](auto *ws, int code, string_view message) {
                 SocketData *data = ws->getUserData();
                 cout << "Client left room " << data->room_id << " (" << data->role << ")" << endl;
+                
+                // Trigger mid-run cancellation if they were executing code
+                *data->run_aborted = true;
+                
                 session_manager.leave(data->room_id, ws);
             }
         })

@@ -51,3 +51,15 @@ string RedisClient::get(string key) {
     freeReplyObject(reply);
     return result;
 }
+
+bool RedisClient::del(string key) {
+    lock_guard<mutex> lock(mtx);
+    if (!context) return false;
+    
+    auto* reply = (redisReply*)redisCommand(context, "DEL %s", key.c_str());
+    if (!reply) return false;
+    
+    freeReplyObject(reply);
+    return true;
+}
+
