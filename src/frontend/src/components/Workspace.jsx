@@ -72,16 +72,37 @@ export default function Workspace({ roomId, role, onLeave }) {
         </div>
         
         <div className="controls">
-          <div className={`status-badge ${status}`}>
-            <span className={`badge-dot ${status === 'connecting' ? 'pulse' : ''}`} />
-            {status}
+          <div className="room-code-badge" style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '8px',
+            fontSize: '0.8rem',
+            fontWeight: '600',
+            letterSpacing: '0.5px',
+            padding: '4px 10px',
+            borderRadius: '4px',
+            background: 'rgba(255, 255, 255, 0.05)',
+            border: '1px solid var(--border-light)',
+            color: 'var(--text-secondary)'
+          }}>
+            <span className={`badge-dot ${status === 'connecting' ? 'pulse' : ''}`} style={{
+              width: '8px',
+              height: '8px',
+              borderRadius: '50%',
+              backgroundColor: status === 'connected' ? 'var(--success)' : status === 'connecting' ? 'var(--warning)' : 'var(--danger)',
+              boxShadow: `0 0 8px ${status === 'connected' ? 'var(--success)' : status === 'connecting' ? 'var(--warning)' : 'var(--danger)'}`
+            }} />
+            <span>Room:</span>
+            <span style={{ fontFamily: 'monospace', color: 'var(--text-primary)', fontSize: '0.9rem', textTransform: 'none' }}>{roomId}</span>
           </div>
-          
+
           <span className={`role-badge ${role}`}>{role}</span>
           
-          <button className="secondary" onClick={handleCopyLink} title="Copy invite link for candidate">
-            Share Link
-          </button>
+          {role === 'interviewer' && (
+            <button className="secondary" onClick={handleCopyLink} title="Copy invite link for candidate">
+              Share Link
+            </button>
+          )}
           
           <button className="danger" onClick={onLeave}>
             Leave

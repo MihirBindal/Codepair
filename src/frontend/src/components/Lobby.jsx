@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 
 export default function Lobby({ onJoinRoom }) {
   const [roomIdInput, setRoomIdInput] = useState('');
-  const [roleInput, setRoleInput] = useState('candidate');
+  const [showJoinForm, setShowJoinForm] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -31,10 +31,10 @@ export default function Lobby({ onJoinRoom }) {
   const handleJoinRoom = (e) => {
     e.preventDefault();
     if (!roomIdInput.trim()) {
-      setError('Please enter a valid Room ID.');
+      setError('Please enter a valid Session ID.');
       return;
     }
-    onJoinRoom(roomIdInput.trim(), roleInput);
+    onJoinRoom(roomIdInput.trim(), 'candidate');
   };
 
   return (
@@ -62,41 +62,46 @@ export default function Lobby({ onJoinRoom }) {
 
         <div className="lobby-divider">OR</div>
 
-        <form onSubmit={handleJoinRoom} className="join-form">
-          <div className="form-group">
-            <label htmlFor="room-id">Session ID</label>
-            <input 
-              id="room-id"
-              type="text" 
-              placeholder="e.g. AbC123"
-              value={roomIdInput}
-              onChange={(e) => setRoomIdInput(e.target.value)}
-              disabled={isLoading}
-            />
-          </div>
-
-          <div className="form-group">
-            <label htmlFor="role">Your Role</label>
-            <select 
-              id="role"
-              value={roleInput}
-              onChange={(e) => setRoleInput(e.target.value)}
-              disabled={isLoading}
-            >
-              <option value="candidate">Candidate</option>
-              <option value="interviewer">Interviewer</option>
-            </select>
-          </div>
-
+        {!showJoinForm ? (
           <button 
-            type="submit" 
+            type="button" 
             className="secondary"
+            onClick={() => setShowJoinForm(true)}
             disabled={isLoading}
-            style={{ justifyContent: 'center', width: '100%', padding: '12px' }}
+            style={{ justifyContent: 'center', width: '100%', padding: '14px' }}
           >
             Join Existing Session
           </button>
-        </form>
+        ) : (
+          <form onSubmit={handleJoinRoom} className="join-form">
+            <div className="form-group">
+              <label htmlFor="room-id">
+                Session ID 
+                <span style={{ textTransform: 'none', fontSize: '0.75rem', color: 'var(--text-muted)', marginLeft: '6px', fontWeight: 'normal' }}>
+                  (case-sensitive)
+                </span>
+              </label>
+              <input 
+                id="room-id"
+                type="text" 
+                placeholder="e.g. AbC123"
+                value={roomIdInput}
+                onChange={(e) => setRoomIdInput(e.target.value)}
+                disabled={isLoading}
+                autoFocus
+              />
+            </div>
+
+            <button 
+              type="submit" 
+              className="primary"
+              disabled={isLoading}
+              style={{ justifyContent: 'center', width: '100%', padding: '12px' }}
+            >
+              Join Session
+            </button>
+          </form>
+        )}
       </div>
     </div>
   );
