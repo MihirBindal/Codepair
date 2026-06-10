@@ -32,5 +32,5 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 COPY --from=builder /app/build/codepair_server /app/codepair_server
 
-EXPOSE 9001
+EXPOSE 4001
 CMD ["./codepair_server"]

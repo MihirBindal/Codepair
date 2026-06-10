@@ -8,7 +8,7 @@ services:
 
   sidecar:
     build:
-      context: ./sidecar
+      context: ./src/sidecar
     network_mode: "host"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -16,7 +16,7 @@ services:
 
   server:
     build:
-      context: .
+      context: ./src/cpp_server
     network_mode: "host"
     depends_on:
       - redis

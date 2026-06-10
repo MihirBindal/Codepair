@@ -8,22 +8,22 @@ fi
 
 # Start Sidecar in background
 echo "Starting FastAPI Sidecar on port 4002..."
-cd sidecar
-./../venv/bin/uvicorn main:app --host 127.0.0.1 --port 4002 > sidecar.log 2>&1 &
+cd src/sidecar
+./venv/bin/uvicorn main:app --host 127.0.0.1 --port 4002 > sidecar.log 2>&1 &
 SIDECAR_PID=$!
-cd ..
+cd ../..
 
 # Start C++ Server in background
 echo "Starting C++ CodePair Server on port 4001..."
-./build/codepair_server > server.log 2>&1 &
+./src/cpp_server/build/codepair_server > server.log 2>&1 &
 SERVER_PID=$!
 
 # Start Vite React Frontend in background
 echo "Starting React Frontend on port 4000..."
-cd frontend
+cd src/frontend
 npm run dev > dev.log 2>&1 &
 FRONTEND_PID=$!
-cd ..
+cd ../..
 
 # Save PIDs to a file for stopping later
 echo "$SIDECAR_PID" > .pids
