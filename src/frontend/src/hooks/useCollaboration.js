@@ -1,7 +1,14 @@
 import { useEffect, useState, useRef } from 'react';
 
+const CODE_TEMPLATES = {
+  cpp: `#include <iostream>\nusing namespace std;\n\nint main() {\n    // Write your C++ code here\n    cout << "Hello, World!" << endl;\n    return 0;\n}\n`,
+  python: `def solve():\n    # Write your Python 3 code here\n    print("Hello, World!")\n\nif __name__ == "__main__":\n    solve()\n`,
+  javascript: `function solve() {\n    // Write your JavaScript code here\n    console.log("Hello, World!");\n}\n\nsolve();\n`
+};
+
 export default function useCollaboration(roomId, role) {
   const [code, setCode] = useState('');
+  const [codes, setCodes] = useState({ cpp: '', python: '', javascript: '' });
   const [version, setVersion] = useState(0);
   const [problem, setProblem] = useState('');
   const [language, setLanguage] = useState('cpp');
@@ -11,11 +18,16 @@ export default function useCollaboration(roomId, role) {
 
   const wsRef = useRef(null);
   const versionRef = useRef(0);
+  const languageRef = useRef('cpp');
 
-  // Sync ref to version state to read it in callback
+  // Sync refs to state to prevent stale closures
   useEffect(() => {
     versionRef.current = version;
   }, [version]);
+
+  useEffect(() => {
+    languageRef.current = language;
+  }, [language]);
 
   useEffect(() => {
     if (!roomId || !role) return;
@@ -35,22 +47,78 @@ export default function useCollaboration(roomId, role) {
         
         switch (msg.type) {
           case 'init':
-            setCode(msg.code || '');
-            setVersion(msg.version || 0);
-            setLanguage(msg.language || 'cpp');
+            let initialCode = msg.code || '';
+            const initialLang = msg.language || 'cpp';
+            
+            // Try loading codes map from sessionStorage
+            let loadedCodes = { cpp: '', python: '', javascript: '' };
+            try {
+              const saved = sessionStorage.getItem(`codepair_codes_${roomId}`);
+              if (saved) {
+                loadedCodes = JSON.parse(saved);
+              }
+            } catch (e) {
+              console.error(e);
+            }
+            
+            if (initialCode.trim()) {
+              loadedCodes[initialLang] = initialCode;
+            } else {
+              initialCode = loadedCodes[initialLang] || CODE_TEMPLATES[initialLang] || '';
+              loadedCodes[initialLang] = initialCode;
+              
+              // Sync the auto-generated template back to the server
+              const nextVersion = (msg.version || 0) + 1;
+              if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                  type: 'edit',
+                  code: initialCode,
+                  version: nextVersion,
+                  language: initialLang
+                }));
+              }
+              setVersion(nextVersion);
+            }
+            
+            setCodes(loadedCodes);
+            setCode(initialCode);
+            setLanguage(initialLang);
             setProblem(msg.problem || '');
+            sessionStorage.setItem(`codepair_codes_${roomId}`, JSON.stringify(loadedCodes));
             break;
             
           case 'edit':
             // Only apply edit if the incoming version is strictly newer than ours
             if (msg.version > versionRef.current) {
-              setCode(msg.code || '');
+              const newCode = msg.code || '';
+              const editLang = msg.language || languageRef.current;
+              
+              setCode(newCode);
               setVersion(msg.version);
+              
+              setCodes((prev) => {
+                const next = { ...prev, [editLang]: newCode };
+                sessionStorage.setItem(`codepair_codes_${roomId}`, JSON.stringify(next));
+                return next;
+              });
             }
             break;
             
           case 'language':
-            setLanguage(msg.language);
+            const nextLang = msg.language;
+            setLanguage(nextLang);
+            
+            // Peer switched active language. Load code for that language
+            setCodes((prev) => {
+              let nextCode = prev[nextLang];
+              if (!nextCode || !nextCode.trim()) {
+                nextCode = CODE_TEMPLATES[nextLang] || '';
+              }
+              setCode(nextCode);
+              const updated = { ...prev, [nextLang]: nextCode };
+              sessionStorage.setItem(`codepair_codes_${roomId}`, JSON.stringify(updated));
+              return updated;
+            });
             break;
             
           case 'problem':
@@ -112,23 +180,57 @@ export default function useCollaboration(roomId, role) {
     const nextVersion = versionRef.current + 1;
     setVersion(nextVersion);
 
+    // Save to codes map locally
+    setCodes((prev) => {
+      const next = { ...prev, [languageRef.current]: newCode };
+      sessionStorage.setItem(`codepair_codes_${roomId}`, JSON.stringify(next));
+      return next;
+    });
+
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({
         type: 'edit',
         code: newCode,
-        version: nextVersion
+        version: nextVersion,
+        language: languageRef.current
       }));
     }
   };
 
   const updateLanguage = (newLanguage) => {
     setLanguage(newLanguage);
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({
-        type: 'language',
-        language: newLanguage
-      }));
-    }
+    
+    let nextCode = '';
+    setCodes((prev) => {
+      nextCode = prev[newLanguage];
+      if (!nextCode || !nextCode.trim()) {
+        nextCode = CODE_TEMPLATES[newLanguage] || '';
+      }
+      setCode(nextCode);
+      
+      const nextVersion = versionRef.current + 1;
+      setVersion(nextVersion);
+      
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        // Send language switch first
+        wsRef.current.send(JSON.stringify({
+          type: 'language',
+          language: newLanguage
+        }));
+        
+        // Then send the code edit with the new language property
+        wsRef.current.send(JSON.stringify({
+          type: 'edit',
+          code: nextCode,
+          version: nextVersion,
+          language: newLanguage
+        }));
+      }
+      
+      const updated = { ...prev, [newLanguage]: nextCode };
+      sessionStorage.setItem(`codepair_codes_${roomId}`, JSON.stringify(updated));
+      return updated;
+    });
   };
 
   const updateProblem = (newProblem) => {
