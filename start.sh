@@ -7,19 +7,19 @@ if ! redis-cli ping >/dev/null 2>&1; then
 fi
 
 # Start Sidecar in background
-echo "Starting FastAPI Sidecar on port 8000..."
+echo "Starting FastAPI Sidecar on port 4002..."
 cd sidecar
-./../venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000 > sidecar.log 2>&1 &
+./../venv/bin/uvicorn main:app --host 127.0.0.1 --port 4002 > sidecar.log 2>&1 &
 SIDECAR_PID=$!
 cd ..
 
 # Start C++ Server in background
-echo "Starting C++ CodePair Server on port 9001..."
+echo "Starting C++ CodePair Server on port 4001..."
 ./build/codepair_server > server.log 2>&1 &
 SERVER_PID=$!
 
 # Start Vite React Frontend in background
-echo "Starting React Frontend on port 5173..."
+echo "Starting React Frontend on port 4000..."
 cd frontend
 npm run dev > dev.log 2>&1 &
 FRONTEND_PID=$!
@@ -32,8 +32,8 @@ echo "$FRONTEND_PID" >> .pids
 
 echo "------------------------------------------------"
 echo "CodePair Application is now RUNNING!"
-echo "- Frontend: http://localhost:5173"
-echo "- C++ Server: port 9001 (WS)"
-echo "- Sidecar: port 8000"
+echo "- Frontend: http://localhost:4000"
+echo "- C++ Server: port 4001 (WS)"
+echo "- Sidecar: port 4002"
 echo "------------------------------------------------"
 echo "To stop the app, run: ./stop.sh"

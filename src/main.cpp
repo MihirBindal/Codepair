@@ -209,7 +209,7 @@ ExecutionResult run_code_via_sidecar(const string& code, const string& language,
     struct sockaddr_in serv_addr;
     memset(&serv_addr, 0, sizeof(serv_addr));
     serv_addr.sin_family = AF_INET;
-    serv_addr.sin_port = htons(8000);
+    serv_addr.sin_port = htons(4002);
     if (inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr) <= 0) {
         res.stderr_output = "Invalid sidecar target address";
         res.exit_code = 1;
@@ -232,7 +232,7 @@ ExecutionResult run_code_via_sidecar(const string& code, const string& language,
     
     string payload = "{\"code\":\"" + escape_json(code) + "\",\"language\":\"" + escape_json(language) + "\"}";
     string req = "POST /execute HTTP/1.0\r\n"
-                 "Host: 127.0.0.1:8000\r\n"
+                 "Host: 127.0.0.1:4002\r\n"
                  "Content-Type: application/json\r\n"
                  "Content-Length: " + to_string(payload.length()) + "\r\n"
                  "Connection: close\r\n\r\n" + payload;
@@ -556,11 +556,11 @@ int main() {
                 session_manager.leave(data->room_id, ws);
             }
         })
-        .listen(9001, [](auto *listen_socket) {
+        .listen(4001, [](auto *listen_socket) {
             if (listen_socket) {
-                cout << "CodePair Server running on port 9001" << endl;
+                cout << "CodePair Server running on port 4001" << endl;
             } else {
-                cerr << "Failed to listen on port 9001" << endl;
+                cerr << "Failed to listen on port 4001" << endl;
             }
         })
         .run();

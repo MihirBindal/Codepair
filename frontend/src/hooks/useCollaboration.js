@@ -21,7 +21,7 @@ export default function useCollaboration(roomId, role) {
     if (!roomId || !role) return;
 
     setStatus('connecting');
-    const ws = new WebSocket(`ws://localhost:9001/ws/${roomId}/${role}`);
+    const ws = new WebSocket(`ws://localhost:4001/ws/${roomId}/${role}`);
     wsRef.current = ws;
 
     ws.onopen = () => {

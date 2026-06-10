@@ -14,7 +14,7 @@ if [ -f .pids ]; then
 fi
 
 # 2. Always double-check and kill any processes listening on the application ports
-PORTS=(8000 9001 5173)
+PORTS=(4002 4001 4000)
 for port in "${PORTS[@]}"; do
     PIDS=$(lsof -t -i:"$port")
     if [ ! -z "$PIDS" ]; then

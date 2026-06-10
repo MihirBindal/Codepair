@@ -10,7 +10,7 @@ export default function Lobby({ onJoinRoom }) {
     setIsLoading(true);
     setError('');
     try {
-      const response = await fetch('http://localhost:9001/create');
+      const response = await fetch('http://localhost:4001/create');
       if (!response.ok) {
         throw new Error('Failed to create room session');
       }
@@ -22,7 +22,7 @@ export default function Lobby({ onJoinRoom }) {
       }
     } catch (err) {
       console.error(err);
-      setError('Could not connect to the C++ server. Make sure it is running on port 9001.');
+      setError('Could not connect to the C++ server. Make sure it is running on port 4001.');
     } finally {
       setIsLoading(false);
     }
