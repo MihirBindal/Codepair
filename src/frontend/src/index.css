@@ -550,3 +550,42 @@ select.theme-select:focus {
   from { transform: translateY(20px); opacity: 0; }
   to { transform: translateY(0); opacity: 1; }
 }
+
+/* Console Tab Styles */
+.console-tab-header {
+  border-top: 1px solid var(--border-light);
+  background: #111218;
+  display: flex;
+  justify-content: flex-start;
+  gap: 4px;
+  padding: 0 16px;
+  height: 38px;
+  align-items: stretch;
+}
+
+.console-tab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-secondary) !important;
+  font-weight: 600;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  padding: 0 16px;
+  display: flex;
+  align-items: center;
+  transition: all 0.2s ease;
+}
+
+.console-tab:hover {
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-primary) !important;
+}
+
+.console-tab.active {
+  background: rgba(255, 255, 255, 0.06);
+  border-bottom: 2px solid var(--accent-blue) !important;
+  color: var(--text-primary) !important;
+}

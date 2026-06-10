@@ -7,17 +7,27 @@ export default function Workspace({ roomId, role, onLeave }) {
     code,
     problem,
     language,
+    stdin,
     logs,
     isRunning,
     status,
     updateCode,
     updateLanguage,
     updateProblem,
+    updateStdin,
     runCode
   } = useCollaboration(roomId, role);
 
   const [toastMessage, setToastMessage] = useState('');
+  const [consoleTab, setConsoleTab] = useState('output'); // 'output' or 'stdin'
   const consoleEndRef = useRef(null);
+
+  // Auto-switch to output console tab when code runs
+  useEffect(() => {
+    if (isRunning) {
+      setConsoleTab('output');
+    }
+  }, [isRunning]);
 
   // Map language backend value to Monaco editor value
   const getEditorLanguage = (lang) => {
@@ -68,7 +78,7 @@ export default function Workspace({ roomId, role, onLeave }) {
       {/* Navbar Header */}
       <header className="workspace-header">
         <div className="brand" onClick={onLeave} style={{ cursor: 'pointer' }}>
-          CodePair <span>v1.0</span>
+          CodePair
         </div>
         
         <div className="controls">
@@ -191,24 +201,60 @@ export default function Workspace({ roomId, role, onLeave }) {
             </div>
           </div>
 
-          {/* Execution Console Output */}
+          {/* Execution Console Output / Custom Input Tabs */}
           <div className="console-section">
-            <div className="pane-header" style={{ borderTop: '1px solid var(--border-light)' }}>
-              Console Output
+            <div className="console-tab-header">
+              <button 
+                className={`console-tab ${consoleTab === 'output' ? 'active' : ''}`}
+                onClick={() => setConsoleTab('output')}
+              >
+                Console Output
+              </button>
+              <button 
+                className={`console-tab ${consoleTab === 'stdin' ? 'active' : ''}`}
+                onClick={() => setConsoleTab('stdin')}
+              >
+                Custom Input
+              </button>
             </div>
+            
             <div className="console-content">
-              {logs.length === 0 ? (
-                <div className="console-placeholder">
-                  Run your code to see the stdout and stderr output streams.
-                </div>
+              {consoleTab === 'output' ? (
+                <>
+                  {logs.length === 0 ? (
+                    <div className="console-placeholder">
+                      Run your code to see the stdout and stderr output streams.
+                    </div>
+                  ) : (
+                    logs.map((log, index) => (
+                      <div key={index} className={`console-line ${log.type}`}>
+                        {log.text}
+                      </div>
+                    ))
+                  )}
+                  <div ref={consoleEndRef} />
+                </>
               ) : (
-                logs.map((log, index) => (
-                  <div key={index} className={`console-line ${log.type}`}>
-                    {log.text}
-                  </div>
-                ))
+                <textarea
+                  className="stdin-textarea"
+                  placeholder="Provide standard input (stdin) for your program execution here..."
+                  value={stdin}
+                  onChange={(e) => updateStdin(e.target.value)}
+                  style={{
+                    width: '100%',
+                    height: '100%',
+                    background: 'transparent',
+                    border: 'none',
+                    resize: 'none',
+                    outline: 'none',
+                    color: 'var(--text-primary)',
+                    fontFamily: "'Fira Code', 'Courier New', Courier, monospace",
+                    fontSize: '0.85rem',
+                    lineHeight: '1.5',
+                    padding: '8px 4px'
+                  }}
+                />
               )}
-              <div ref={consoleEndRef} />
             </div>
           </div>
         </section>

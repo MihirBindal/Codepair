@@ -102,6 +102,15 @@ void SessionManager::update_language(string id, string language) {
     }
 }
 
+void SessionManager::update_stdin(string id, string stdin_input) {
+    unique_lock<shared_mutex> lock(rw_mutex);
+    auto it = sessions.find(id);
+    if (it != sessions.end()) {
+        it->second.stdin_input = stdin_input;
+        it->second.last_activity = chrono::steady_clock::now();
+    }
+}
+
 void SessionManager::touch(string id) {
     unique_lock<shared_mutex> lock(rw_mutex);
     auto it = sessions.find(id);

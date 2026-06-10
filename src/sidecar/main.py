@@ -1,3 +1,4 @@
+import os
 import asyncio
 import json
 import uuid
@@ -13,6 +14,7 @@ semaphore = asyncio.Semaphore(5)
 class ExecutionRequest(BaseModel):
     code: str
     language: str
+    input: str = ""
 
 async def run_sandbox(request: Request, payload: ExecutionRequest):
     async with semaphore:
@@ -22,16 +24,16 @@ async def run_sandbox(request: Request, payload: ExecutionRequest):
         lang = payload.language.lower()
         if lang in ["python", "py"]:
             image = "python:3.10-alpine"
-            run_args = ["python3"]
+            run_args = ["python3", "-c", "import os; exec(compile(os.environ['CODE'], 'solution.py', 'exec'))"]
             extra_args = ["--read-only"]
         elif lang in ["javascript", "js", "node"]:
             image = "node:18-alpine"
-            run_args = ["node"]
+            run_args = ["node", "-e", "eval(process.env.CODE)"]
             extra_args = ["--read-only"]
         elif lang in ["cpp", "c++", "c"]:
             image = "gcc:latest"
-            # C++ needs to write source and compile, so we use a tempfs for /tmp with execution rights
-            run_args = ["sh", "-c", "cat > /tmp/main.cpp && g++ -O3 /tmp/main.cpp -o /tmp/main && chmod +x /tmp/main && /tmp/main"]
+            # C++ needs to write source and compile. We extract the code using printenv to prevent shell expansion/injection.
+            run_args = ["sh", "-c", "printenv CODE > /tmp/main.cpp && g++ -O3 /tmp/main.cpp -o /tmp/main && chmod +x /tmp/main && /tmp/main"]
             extra_args = ["--tmpfs", "/tmp:rw,exec"]
         else:
             yield json.dumps({"event": "stderr", "data": f"Unsupported language: {payload.language}\n"}) + "\n"
@@ -43,6 +45,7 @@ async def run_sandbox(request: Request, payload: ExecutionRequest):
             "--name", container_name,
             "--rm",
             "-i",
+            "-e", "CODE",
             "--network", "none",
             "--memory", "256m",
             "--cpus", "0.5",
@@ -52,21 +55,27 @@ async def run_sandbox(request: Request, payload: ExecutionRequest):
         print(f"[Sidecar] Starting container {container_name} for language: {lang}")
         print(f"[Sidecar] Code payload:\n{payload.code}\n---")
         
+        # Populate CODE environment variable for the docker run command to pass into container
+        sub_env = os.environ.copy()
+        sub_env["CODE"] = payload.code
+
         try:
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.PIPE,
+                env=sub_env
             )
         except Exception as e:
             yield json.dumps({"event": "stderr", "data": f"Failed to spawn Docker container: {str(e)}\n"}) + "\n"
             yield json.dumps({"event": "exit", "exit_code": 1, "timed_out": False}) + "\n"
             return
 
-        # Write code to stdin and close it
+        # Write custom input to container stdin and close it
         try:
-            process.stdin.write(payload.code.encode('utf-8'))
+            stdin_data = payload.input or ""
+            process.stdin.write(stdin_data.encode('utf-8'))
             await process.stdin.drain()
             process.stdin.close()
         except Exception as e:

@@ -12,6 +12,7 @@ export default function useCollaboration(roomId, role) {
   const [version, setVersion] = useState(0);
   const [problem, setProblem] = useState('');
   const [language, setLanguage] = useState('cpp');
+  const [stdin, setStdin] = useState('');
   const [logs, setLogs] = useState([]);
   const [isRunning, setIsRunning] = useState(false);
   const [status, setStatus] = useState('connecting');
@@ -84,23 +85,24 @@ export default function useCollaboration(roomId, role) {
             setCode(initialCode);
             setLanguage(initialLang);
             setProblem(msg.problem || '');
+            setStdin(msg.input || '');
             sessionStorage.setItem(`codepair_codes_${roomId}`, JSON.stringify(loadedCodes));
             break;
             
           case 'edit':
             // Only apply edit if the incoming version is strictly newer than ours
             if (msg.version > versionRef.current) {
-              const newCode = msg.code || '';
-              const editLang = msg.language || languageRef.current;
-              
-              setCode(newCode);
-              setVersion(msg.version);
-              
-              setCodes((prev) => {
-                const next = { ...prev, [editLang]: newCode };
-                sessionStorage.setItem(`codepair_codes_${roomId}`, JSON.stringify(next));
-                return next;
-              });
+               const newCode = msg.code || '';
+               const editLang = msg.language || languageRef.current;
+               
+               setCode(newCode);
+               setVersion(msg.version);
+               
+               setCodes((prev) => {
+                 const next = { ...prev, [editLang]: newCode };
+                 sessionStorage.setItem(`codepair_codes_${roomId}`, JSON.stringify(next));
+                 return next;
+               });
             }
             break;
             
@@ -123,6 +125,10 @@ export default function useCollaboration(roomId, role) {
             
           case 'problem':
             setProblem(msg.problem || '');
+            break;
+            
+          case 'input':
+            setStdin(msg.input || '');
             break;
             
           case 'output':
@@ -243,6 +249,16 @@ export default function useCollaboration(roomId, role) {
     }
   };
 
+  const updateStdin = (newStdin) => {
+    setStdin(newStdin);
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: 'input',
+        input: newStdin
+      }));
+    }
+  };
+
   const runCode = () => {
     setLogs([{ type: 'system', text: '[System] Compiling and executing code sandbox...\n' }]);
     setIsRunning(true);
@@ -261,12 +277,14 @@ export default function useCollaboration(roomId, role) {
     code,
     problem,
     language,
+    stdin,
     logs,
     isRunning,
     status,
     updateCode,
     updateLanguage,
     updateProblem,
+    updateStdin,
     runCode,
     clearLogs
   };

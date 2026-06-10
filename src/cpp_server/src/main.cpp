@@ -27,6 +27,7 @@ struct RunRequest {
     string room_id;
     string code;
     string language;
+    string input;
 };
 
 struct ExecutionResult {
@@ -42,6 +43,7 @@ struct WSMessage {
     int version = -1;
     string language;
     string problem;
+    string input;
 };
 
 SessionManager session_manager;
@@ -175,6 +177,35 @@ WSMessage parse_ws_message(const string& text) {
             msg.problem = prob_val;
         }
     }
+    // Extract "input"
+    size_t input_pos = find_json_key(text, "input");
+    if (input_pos != string::npos) {
+        size_t start = text.find("\"", input_pos + 7);
+        if (start != string::npos) {
+            string input_val = "";
+            bool escaped = false;
+            size_t i = start + 1;
+            while (i < text.length()) {
+                char c = text[i];
+                if (escaped) {
+                    if (c == 'n') input_val += '\n';
+                    else if (c == 't') input_val += '\t';
+                    else if (c == '\"') input_val += '\"';
+                    else if (c == '\\') input_val += '\\';
+                    else input_val += c;
+                    escaped = false;
+                } else if (c == '\\') {
+                    escaped = true;
+                } else if (c == '\"') {
+                    break;
+                } else {
+                    input_val += c;
+                }
+                i++;
+            }
+            msg.input = input_val;
+        }
+    }
     return msg;
 }
 
@@ -183,6 +214,7 @@ RunRequest parse_run_request(const string& body) {
     RunRequest req;
     req.code = parsed.code;
     req.language = parsed.language;
+    req.input = parsed.input;
     
     // Extract "room_id"
     size_t room_pos = body.find("\"room_id\"");
@@ -197,7 +229,7 @@ RunRequest parse_run_request(const string& body) {
 }
 
 // HTTP/1.0 streaming client connecting to Python FastAPI sidecar
-ExecutionResult run_code_via_sidecar(const string& code, const string& language, const string& ws_room_id, uWS::Loop* loop, shared_ptr<bool> aborted) {
+ExecutionResult run_code_via_sidecar(const string& code, const string& language, const string& input, const string& ws_room_id, uWS::Loop* loop, shared_ptr<bool> aborted) {
     ExecutionResult res;
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
@@ -230,7 +262,7 @@ ExecutionResult run_code_via_sidecar(const string& code, const string& language,
         return res;
     }
     
-    string payload = "{\"code\":\"" + escape_json(code) + "\",\"language\":\"" + escape_json(language) + "\"}";
+    string payload = "{\"code\":\"" + escape_json(code) + "\",\"language\":\"" + escape_json(language) + "\",\"input\":\"" + escape_json(input) + "\"}";
     string req = "POST /execute HTTP/1.0\r\n"
                  "Host: 127.0.0.1:4002\r\n"
                  "Content-Type: application/json\r\n"
@@ -384,6 +416,7 @@ int main() {
                     redis_client.del("room:" + room_id + ":code");
                     redis_client.del("room:" + room_id + ":version");
                     redis_client.del("room:" + room_id + ":language");
+                    redis_client.del("room:" + room_id + ":input");
                 });
                 session_manager.delete_session(room_id);
             }
@@ -418,7 +451,7 @@ int main() {
                     RunRequest run_req = parse_run_request(*body);
                     uWS::Loop* loop = uWS::Loop::get();
                     thread_pool.enqueue([res, run_req, aborted, loop]() {
-                        ExecutionResult exec_res = run_code_via_sidecar(run_req.code, run_req.language, "", nullptr, aborted);
+                        ExecutionResult exec_res = run_code_via_sidecar(run_req.code, run_req.language, run_req.input, "", nullptr, aborted);
                         
                         string json_resp = "{"
                             "\"stdout\":\"" + escape_json(exec_res.stdout_output) + "\","
@@ -463,6 +496,7 @@ int main() {
                 string ver_str = redis_client.get("room:" + data->room_id + ":version");
                 string lang = redis_client.get("room:" + data->room_id + ":language");
                 string problem = redis_client.get("room:" + data->room_id + ":problem");
+                string input = redis_client.get("room:" + data->room_id + ":input");
                 int version = ver_str.empty() ? 0 : stoi(ver_str);
                 if (lang.empty()) lang = "cpp";
                 
@@ -470,13 +504,15 @@ int main() {
                 session_manager.update_code_with_version(data->room_id, code, version);
                 session_manager.update_language(data->room_id, lang);
                 session_manager.update_problem(data->room_id, problem);
+                session_manager.update_stdin(data->room_id, input);
                 
                 string init_resp = "{"
                     "\"type\":\"init\","
                     "\"code\":\"" + escape_json(code) + "\","
                     "\"version\":" + to_string(version) + ","
                     "\"language\":\"" + escape_json(lang) + "\","
-                    "\"problem\":\"" + escape_json(problem) + "\""
+                    "\"problem\":\"" + escape_json(problem) + "\","
+                    "\"input\":\"" + escape_json(input) + "\""
                 "}";
                 ws->send(init_resp, uWS::OpCode::TEXT);
             },
@@ -532,6 +568,21 @@ int main() {
                     thread_pool.enqueue([room_id = data->room_id, problem = msg.problem]() {
                         redis_client.set("room:" + room_id + ":problem", problem);
                     });
+                } else if (msg.type == "input") {
+                    session_manager.update_stdin(data->room_id, msg.input);
+                    // Forward input to peer
+                    Session s;
+                    if (session_manager.get_session(data->room_id, s)) {
+                        void* other_ws = (data->role == "interviewer") ? s.candidate : s.interviewer;
+                        if (other_ws) {
+                            auto* peer = (uWS::WebSocket<false, true, SocketData>*) other_ws;
+                            peer->send(text, opCode);
+                        }
+                    }
+                    // Persist to Redis
+                    thread_pool.enqueue([room_id = data->room_id, input = msg.input]() {
+                        redis_client.set("room:" + room_id + ":input", input);
+                    });
                 } else if (msg.type == "run") {
                     Session s;
                     if (session_manager.get_session(data->room_id, s)) {
@@ -540,8 +591,8 @@ int main() {
                         
                         cout << "[WebSocket] Dispatching code run task. Room: " << data->room_id << endl;
                         uWS::Loop* loop = uWS::Loop::get();
-                        thread_pool.enqueue([room_id = data->room_id, code = s.code, language = s.language, loop, aborted = data->run_aborted]() {
-                            run_code_via_sidecar(code, language, room_id, loop, aborted);
+                        thread_pool.enqueue([room_id = data->room_id, code = s.code, language = s.language, input = s.stdin_input, loop, aborted = data->run_aborted]() {
+                            run_code_via_sidecar(code, language, input, room_id, loop, aborted);
                         });
                     }
                 }

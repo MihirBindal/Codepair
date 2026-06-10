@@ -14,6 +14,7 @@ struct Session {
     string code;
     string problem;
     string language = "cpp";
+    string stdin_input;
     int version = 0;
     chrono::steady_clock::time_point last_activity = chrono::steady_clock::now();
     void* interviewer = nullptr;
@@ -30,6 +31,7 @@ public:
     bool update_code_with_version(string id, string code, int version);
     void update_problem(string id, string problem);
     void update_language(string id, string language);
+    void update_stdin(string id, string stdin_input);
     void touch(string id);
     vector<string> get_expired_sessions(int expiry_hours);
     void delete_session(string id);
